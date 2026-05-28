@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admissão — NewRH Corp</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@700;800;900&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+<style>
+@keyframes pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
+.processo-item { transition: background .1s; }
+</style>
+</head>
+<body>
+
+<!-- App Screen -->
+<div id="app-screen" class="adm-layout">
+
+  <!-- ── Sidebar ─────────────────────────────── -->
+  <aside class="adm-sidebar">
+    <div class="sidebar-header">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div class="sidebar-header__brand">🏢 NewRH</div>
+          <div class="sidebar-header__sub">Admissão</div>
+        </div>
+        <a href="/?gestor=1" style="color:var(--ink-3);font-size:.75rem;text-decoration:none;">← Portal</a>
+      </div>
+    </div>
+
+    <div class="sidebar-stats">
+      <div class="s-stat"><div class="s-stat__n" id="stat-andamento">—</div><div class="s-stat__l">Em andamento</div></div>
+      <div class="s-stat"><div class="s-stat__n" id="stat-concluidos">—</div><div class="s-stat__l">Concluídos</div></div>
+    </div>
+
+    <div class="sidebar-filter" style="display:flex;gap:6px;">
+      <select id="filter-status" class="form-field__select" style="flex:1;padding:6px 8px;font-size:.78rem;" onchange="Adm.loadLista()">
+        <option value="">Todos</option>
+        <option value="EM_ANDAMENTO" selected>Em andamento</option>
+        <option value="CONCLUIDO">Concluídos</option>
+        <option value="CANCELADO">Cancelados</option>
+      </select>
+      <select id="filter-dept" class="form-field__select" style="flex:1;padding:6px 8px;font-size:.78rem;" onchange="Adm.loadLista()">
+        <option value="">Todos depts</option>
+        <option value="RH">RH</option>
+        <option value="DP">Depto Pessoal</option>
+        <option value="DP_EXTERNO">DP Externo</option>
+        <option value="SESMT">SESMT</option>
+      </select>
+    </div>
+
+    <div class="processo-list" id="processo-list">
+      <div style="padding:24px;text-align:center;color:var(--ink-3);font-size:.83rem;">Carregando...</div>
+    </div>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────── -->
+  <main class="adm-main" id="adm-main">
+    <div class="empty-adm">
+      <div class="empty-adm__icon">📋</div>
+      <p>Selecione um processo na lista ao lado</p>
+    </div>
+  </main>
+
+</div>
+
+<!-- Modal de ação -->
+<div class="modal" id="action-modal" onclick="Adm.closeModal()">
+  <div class="modal__box" onclick="event.stopPropagation()" style="max-width:480px;">
+    <h3 class="modal__title" id="modal-title">Confirmar ação</h3>
+    <div id="modal-body"></div>
+    <div style="display:flex;gap:10px;margin-top:20px;">
+      <button class="btn btn--ghost btn--full" onclick="Adm.closeModal()">Cancelar</button>
+      <button class="btn btn--primary btn--full" id="modal-confirm">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Cache simples para evitar re-fetch desnecessário
+// ── Request Manager: cache + fila + concorrência limitada ────
+const _cache = {};
+const _inflight = {};   // deduplicação: mesma URL não dispara 2x ao mesmo tempo
+const _MAX_PARALLEL = 4;
+let _running = 0;
+const _queue = [];
+
+function _drainQueue() {
+  while (_queue.length > 0 && _running < _MAX_PARALLEL) {
+    const { url, resolve, reject } = _queue.shift();
+    _running++;
+    _fetchUrl(url)
+      .then(resolve).catch(reject)
+      .finally(() => { _running--; _drainQueue(); });
+  }
+}
+
+async function _fetchUrl(url) {
+  // Deduplicação: se já há um fetch em voo para essa URL, compartilha a promise
+  if (_inflight[url]) return _inflight[url];
+  const promise = req(url).finally(() => { delete _inflight[url]; });
+  _inflight[url] = promise;
+  return promise;
+}
+
+async function reqCached(url, ttl = 15000) {
+  const now = Date.now();
+  if (_cache[url] && (now - _cache[url].ts) < ttl) return _cache[url].data;
+  // Encadeia na fila se já há muitas requisições paralelas
+  const data = await (_running < _MAX_PARALLEL
+    ? (_running++, _fetchUrl(url).finally(() => { _running--; _drainQueue(); }))
+    : new Promise((resolve, reject) => _queue.push({ url, resolve, reject })));
+  _cache[url] = { data, ts: Date.now() };
+  return data;
+}
+
+function invalidateCache(processo_id) {
+  const key = `/api/processos/${processo_id}`;
+  delete _cache[key];
+  delete _cache['/api/processos/stats'];
+  Object.keys(_cache).forEach(k => { if (k.startsWith('/api/processos?')) delete _cache[k]; });
+}
+
+let TOKEN = localStorage.getItem('rz_token');
+let ROLE  = localStorage.getItem('rz_role') || '';
+
+
+
+const API = '';
+
+async function req(url, opts={}) {
+  const r = await fetch(API + url, {
+    ...opts,
+    headers: { 'Authorization':'Bearer '+TOKEN, 'Content-Type':'application/json', ...(opts.headers||{}) }
+  });
+  if (r.status === 401) {
+    // Token expirado — volta pro portal
+    localStorage.removeItem('rz_token');
+    window.location.href = '/?gestor=1';
+    return;
+  }
+  if (!r.ok) { const e = await r.json().catch(()=>({message:'Erro'})); throw new Error(e.message); }
+  return r.json();
+}
+
+async function reqForm(url, fd) {
+  const r = await fetch(API + url, { method:'POST', headers:{'Authorization':'Bearer '+TOKEN}, body:fd });
+  if (!r.ok) { const e = await r.json().catch(()=>({message:'Erro'})); throw new Error(e.message); }
+  return r.json();
+}
+
+const STATUS_LABEL = { PENDENTE:'Pendente', EM_ANDAMENTO:'Em andamento', APROVADO:'Aprovado', REPROVADO:'Reprovado', REENVIAR:'Reenviar doc.' };
+const STATUS_ICON  = { PENDENTE:'○', EM_ANDAMENTO:'◉', APROVADO:'✅', REPROVADO:'❌', REENVIAR:'🔄' };
+const TIPO_ICON    = { APROVACAO:'🗂', DOCUMENTO:'📄', CHECKLIST:'☑', ENTREVISTA:'🎤' };
+
+let currentProcessoId = null;
+let currentProcesso   = null;
+
+const Adm = {
+
+  async loadStats() {
+    try {
+      const s = await reqCached('/api/processos/stats', 30000);
+      document.getElementById('stat-andamento').textContent  = s.andamento;
+      document.getElementById('stat-concluidos').textContent = s.concluidos;
+    } catch(e) { console.error(e); }
+  },
+
+  async loadLista() {
+    const status = document.getElementById('filter-status').value;
+    const dept   = document.getElementById('filter-dept').value;
+    const list   = document.getElementById('processo-list');
+    // Skeleton animado enquanto carrega
+    list.innerHTML = [1,2,3].map(() => `
+      <div style="padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.04);">
+        <div style="height:13px;width:70%;background:rgba(255,255,255,.07);border-radius:4px;margin-bottom:8px;animation:pulse 1.2s ease infinite;"></div>
+        <div style="height:11px;width:50%;background:rgba(255,255,255,.04);border-radius:4px;margin-bottom:10px;animation:pulse 1.2s ease infinite .2s;"></div>
+        <div style="height:4px;background:rgba(255,255,255,.06);border-radius:99px;animation:pulse 1.2s ease infinite .4s;"></div>
+      </div>`).join('');
+    try {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (dept)   params.set('departamento', dept);
+      // cache de 15s para não re-buscar ao trocar filtros rapidamente
+      const data = await reqCached(`/api/processos?${params}`, 15000);
+      if (data.items.length === 0) {
+        list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--ink-3);font-size:.83rem;">Nenhum processo encontrado</div>';
+        return;
+      }
+      list.innerHTML = data.items.map(p => `
+        <div class="processo-item ${p.id===currentProcessoId?'processo-item--active':''}"
+             onclick="Adm.loadProcesso(${p.id})" onmouseenter="Adm.prefetch(${p.id})">
+          <p class="processo-item__nome">${p.candidatura.nome}</p>
+          <p class="processo-item__cargo">${p.candidatura.cargo} · ${p.candidatura.local}</p>
+          <div class="processo-item__bottom">
+            <div class="progress-mini"><div class="progress-mini__fill" style="width:${p.progresso}%"></div></div>
+            <span style="font-size:.7rem;color:var(--ink-3);">${p.progresso}%</span>
+          </div>
+          <div style="margin-top:6px;">
+            <span class="pill pill--${p.status}">${p.status==='EM_ANDAMENTO'?'⏳ Em andamento':p.status==='CONCLUIDO'?'✅ Concluído':'❌ Cancelado'}</span>
+          </div>
+        </div>`).join('');
+    } catch(e) {
+      list.innerHTML = `<div style="padding:20px;text-align:center;color:#FF5252;font-size:.83rem;">${e.message}</div>`;
+    }
+  },
+
+  prefetch(id) {
+    // Debounce de 250ms — só pré-carrega se o mouse ficar sobre o item
+    clearTimeout(Adm._prefetchTimer);
+    Adm._prefetchTimer = setTimeout(() => {
+      reqCached(`/api/processos/${id}`, 30000).catch(() => {});
+    }, 250);
+  },
+
+  async loadProcesso(id) {
+    currentProcessoId = id;
+    document.querySelectorAll('.processo-item').forEach(el => el.classList.remove('processo-item--active'));
+    document.querySelectorAll('.processo-item').forEach(el => {
+      if(el.onclick.toString().includes(`(${id})`)) el.classList.add('processo-item--active');
+    });
+    const main = document.getElementById('adm-main');
+    // Se já está em cache (prefetch no hover), não mostra loading
+    const cached = _cache[`/api/processos/${id}`];
+    if (!cached) {
+      main.innerHTML = '<div style="padding:60px;text-align:center;color:var(--ink-3);">Carregando...</div>';
+    }
+    try {
+      // Busca direto do servidor (ignora cache) para garantir dados atualizados
+      const p = await req(`/api/processos/${id}`);
+      _cache[`/api/processos/${id}`] = { data: p, ts: Date.now() };
+      currentProcesso = p;
+      main.innerHTML = Adm.renderProcesso(p);
+    } catch(e) {
+      main.innerHTML = `<div style="padding:40px;text-align:center;color:#FF5252;">${e.message}</div>`;
+    }
+  },
+
+  renderProcesso(p) {
+    const c = p.candidatura;
+    const etapasHtml = p.etapas.map(e => Adm.renderEtapa(e, p.id)).join('');
+    return `
+      <div class="detalhe-header">
+        <div>
+          <h2 class="detalhe-nome">${c.nome}</h2>
+          <p class="detalhe-cargo">📋 ${c.cargo} · 📍 ${c.local}</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="pill pill--${p.status}">${p.status==='EM_ANDAMENTO'?'⏳ Em andamento':p.status==='CONCLUIDO'?'✅ Concluído':'❌ Cancelado'}</span>
+            <span style="font-size:.8rem;color:var(--ink-3);">📧 ${c.email}</span>
+            <span style="font-size:.8rem;color:var(--ink-3);">📱 ${c.phone}</span>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          ${p.sharepointUrl ? `<a href="${p.sharepointUrl}" target="_blank" class="btn btn--ghost btn--small">📁 Pasta SharePoint</a>` : '<span style="font-size:.75rem;color:var(--ink-3);">📁 Pasta SharePoint criando...</span>'}
+        </div>
+      </div>
+
+      <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:.8rem;color:var(--ink-3);">Progresso: <strong style="color:#fff;">${p.progresso}%</strong></span>
+        <span style="font-size:.8rem;color:var(--ink-3);">Etapa atual: <strong style="color:var(--fire);">${p.etapaAtual || '—'}</strong></span>
+      </div>
+      <div class="progress-bar"><div class="progress-bar__fill" style="width:${p.progresso}%"></div></div>
+
+      <div class="etapas-wrap">${etapasHtml}</div>
+
+      <!-- Painel Interno (notas + salário) — nunca enviado ao candidato -->
+      <div style="margin-top:24px;background:rgba(91,141,239,.06);border:1px solid rgba(91,141,239,.2);
+                  border-left:3px solid #5B8DEF;border-radius:12px;padding:20px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+          <span style="font-size:16px;">🔒</span>
+          <h4 style="margin:0;color:#5B8DEF;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">
+            Uso Interno — Não enviado ao candidato
+          </h4>
+        </div>
+
+        <!-- Notas internas -->
+        <div style="margin-bottom:16px;">
+          <label style="display:block;color:#A8A8B8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">
+            📝 Notas Internas
+          </label>
+          <textarea id="notas-internas-${p.id}" rows="4"
+                    placeholder="Observações internas sobre o candidato (perfil, pontos de atenção, feedback da equipe...)&#10;Visível apenas para gestores no sistema."
+                    style="width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(91,141,239,.25);
+                           color:#fff;border-radius:8px;padding:12px;font-size:13px;resize:vertical;
+                           font-family:inherit;box-sizing:border-box;">${p.notasInternas || ''}</textarea>
+        </div>
+
+        <!-- Salário proposto — só para quem tem permissão -->
+        ${Adm.podVerSalario() ? `
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-bottom:16px;">
+          <div>
+            <label style="display:block;color:#A8A8B8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">
+              💰 Salário Proposto (R$)
+            </label>
+            <input type="number" id="salario-proposto-${p.id}" step="0.01" min="0"
+                   value="${p.salarioProposto || ''}"
+                   placeholder="0,00"
+                   style="width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(91,141,239,.25);
+                          color:#fff;border-radius:8px;padding:10px 12px;font-size:14px;font-weight:700;
+                          box-sizing:border-box;">
+          </div>
+          <div>
+            <label style="display:block;color:#A8A8B8;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px;">
+              📋 Observação sobre Salário
+            </label>
+            <input type="text" id="salario-obs-${p.id}"
+                   value="${p.salarioObs || ''}"
+                   placeholder="Ex: inclui benefícios, a confirmar com DP..."
+                   style="width:100%;background:rgba(255,255,255,.04);border:1px solid rgba(91,141,239,.25);
+                          color:#fff;border-radius:8px;padding:10px 12px;font-size:13px;
+                          box-sizing:border-box;">
+          </div>
+        </div>` : ''}
+
+        <button onclick="Adm.salvarInterno(${p.id})" id="btn-interno-${p.id}"
+                style="background:rgba(91,141,239,.15);border:1px solid rgba(91,141,239,.3);
+                       color:#5B8DEF;border-radius:8px;padding:9px 20px;font-size:13px;
+                       font-weight:700;cursor:pointer;">
+          💾 Salvar Notas e Salário
+        </button>
+        <span id="interno-saved-${p.id}" style="display:none;color:#2ECC71;font-size:12px;margin-left:12px;">✅ Salvo!</span>
+      </div>`;
+  },
+
+  renderEtapa(e, processoId) {
+    const isAtiva    = e.status === 'EM_ANDAMENTO';
+    const isAprovada = e.status === 'APROVADO';
+    const temDocs    = e.tipo === 'DOCUMENTO' || e.codigo === 'PROVA_DEEP';
+    const docsHtml   = e.documentos.length > 0 ? `
+      <div class="docs-list">
+        ${e.documentos.map(d => `
+          <div style="flex-direction:column;align-items:stretch;" class="doc-item">
+            <div style="display:flex;align-items:center;gap:6px;width:100%;">
+              <span>📄</span>
+              <span class="doc-item__name" style="flex:1;min-width:0;">${d.nome}${d.versao>1?`<span style="font-size:10px;background:rgba(91,141,239,.2);color:#5B8DEF;border-radius:4px;padding:1px 5px;margin-left:4px;">v${d.versao}</span>`:''}</span>
+              <span class="pill pill--${d.status}" style="font-size:.68rem;flex-shrink:0;">${STATUS_LABEL[d.status]||d.status}</span>
+              ${d.sharepointUrl ? `<a href="${d.sharepointUrl}" target="_blank" style="color:var(--fire);font-size:.75rem;text-decoration:none;flex-shrink:0;">SP ↗</a>` : '<span style="color:#5A6478;font-size:.7rem;flex-shrink:0;">SP...</span>'}
+              ${isAtiva && d.status === 'PENDENTE' ? `
+                <button class="btn btn--ghost btn--small" onclick="Adm.revisarDoc(${processoId},${e.id},${d.id},'APROVADO')" title="Aprovar">✅</button>
+                <button class="btn btn--ghost btn--small" onclick="Adm.revisarDoc(${processoId},${e.id},${d.id},'REENVIAR')" title="Pedir reenvio">🔄</button>
+                <button class="btn btn--ghost btn--small" onclick="Adm.revisarDoc(${processoId},${e.id},${d.id},'REPROVADO')" title="Reprovar">❌</button>
+              ` : ''}
+              <button onclick="Adm.toggleDocAcoes(${d.id})"
+                      title="Comentar / Substituir arquivo"
+                      style="background:none;border:1px solid rgba(255,255,255,.12);color:#9AA3B2;
+                             border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer;
+                             flex-shrink:0;margin-left:auto;">✏️</button>
+            </div>
+            <div id="doc-acoes-${d.id}" style="display:none;margin-top:8px;padding:10px;
+                 background:rgba(255,255,255,.03);border-radius:8px;border:1px solid rgba(255,255,255,.07);">
+              <p style="margin:0 0 6px;font-size:11px;color:#9AA3B2;font-weight:700;text-transform:uppercase;">🔒 Uso Interno</p>
+              <textarea id="comentario-${d.id}" rows="2"
+                        placeholder="Comentário interno (não enviado ao candidato)..."
+                        style="width:100%;background:rgba(91,141,239,.05);border:1px solid rgba(91,141,239,.2);
+                               color:#fff;border-radius:6px;padding:8px;font-size:12px;resize:none;
+                               font-family:inherit;box-sizing:border-box;margin-bottom:8px;">${d.comentarioInterno||''}</textarea>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <button onclick="Adm.salvarComentario(${d.id},${e.id})"
+                        style="background:rgba(91,141,239,.15);border:1px solid rgba(91,141,239,.3);color:#5B8DEF;
+                               border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;">
+                  💾 Salvar
+                </button>
+                <label style="background:rgba(255,82,82,.1);border:1px solid rgba(255,82,82,.25);color:#FF5252;
+                              border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;">
+                  🔄 Substituir Arquivo
+                  <input type="file" accept="*/*" style="display:none"
+                         onchange="Adm.substituirDoc(${d.id},${e.id},this)">
+                </label>
+                <span id="acao-saved-${d.id}" style="display:none;color:#2ECC71;font-size:11px;">✅ Salvo!</span>
+              </div>
+              ${d.comentarioInterno?`<p style="margin:6px 0 0;font-size:11px;color:#5B8DEF;font-style:italic;">💬 ${d.comentarioInterno}</p>`:''}
+            </div>
+          </div>`).join('')}
+      </div>` : '';
+
+    const uploadHtml = temDocs ? `
+      <div class="upload-zone" id="zone-${e.id}" onclick="document.getElementById('upload-${e.id}').click()"
+           style="cursor:pointer;">
+        <input type="file" id="upload-${e.id}" style="display:none"
+               onchange="Adm.uploadDoc(${processoId},${e.id},this)">
+        <span id="zone-label-${e.id}" style="color:var(--ink-2);font-size:.85rem;">📎 Clique para anexar documento</span>
+      </div>` : '';
+
+    const actionsHtml = isAtiva ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:700;color:#9AA3B2;text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px;">
+            🔒 Nota Interna <span style="color:#5A6478;font-weight:400;">(só gestores)</span>
+          </label>
+          <textarea id="nota-${e.id}" rows="3"
+                    placeholder="Anotações internas — não enviado ao candidato..."
+                    style="width:100%;background:rgba(91,141,239,.05);border:1px solid rgba(91,141,239,.2);
+                           color:#fff;border-radius:8px;padding:10px;font-size:12px;resize:vertical;
+                           font-family:inherit;box-sizing:border-box;"></textarea>
+        </div>
+        <div>
+          <label style="display:block;font-size:11px;font-weight:700;color:#9AA3B2;text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px;">
+            📧 Nota Externa <span style="color:#5A6478;font-weight:400;">(enviada ao candidato)</span>
+          </label>
+          <textarea id="nota-externa-${e.id}" rows="3"
+                    placeholder="Mensagem enviada ao candidato por e-mail ao aprovar/reprovar..."
+                    style="width:100%;background:rgba(255,106,0,.05);border:1px solid rgba(255,106,0,.2);
+                           color:#fff;border-radius:8px;padding:10px;font-size:12px;resize:vertical;
+                           font-family:inherit;box-sizing:border-box;"></textarea>
+        </div>
+      </div>
+      <div class="etapa-actions">
+        <button class="btn btn-aprovar btn--small" onclick="Adm.atualizarEtapa(${processoId},${e.id},'APROVADO')">✅ Aprovar</button>
+        <button class="btn btn-reenviar btn--small" onclick="Adm.atualizarEtapa(${processoId},${e.id},'REENVIAR')">🔄 Reenviar Doc.</button>
+        <button class="btn btn-reprovar btn--small" onclick="Adm.atualizarEtapa(${processoId},${e.id},'REPROVADO')">❌ Reprovar</button>
+        <button class="btn btn--small" style="background:rgba(90,100,120,.15);color:#9AA3B2;border:1px solid rgba(90,100,120,.3);" onclick="Adm.atualizarEtapa(${processoId},${e.id},'NAO_APLICAVEL')" title="Marcar como Não Aplicável — etapa será pulada">🚫 N/A</button>
+      </div>` : '';
+
+    const notaHtml = (e.nota || e.notaExterna) ? `
+      ${e.nota ? `<p style="font-size:.8rem;color:#5B8DEF;margin-top:8px;font-style:italic;">🔒 ${e.nota}</p>` : ''}
+      ${e.notaExterna ? `<p style="font-size:.8rem;color:#FF6A00;margin-top:4px;font-style:italic;">📧 ${e.notaExterna}</p>` : ''}
+    ` : '';
+    const respHtml = e.responsavel ? `<p style="font-size:.75rem;color:var(--ink-3);margin-top:4px;">👤 ${e.responsavel} ${e.concluidoEm ? '· '+new Date(e.concluidoEm).toLocaleDateString('pt-BR') : ''}</p>` : '';
+
+    return `
+      <div class="etapa-card etapa-card--${e.status}" id="etapa-${e.id}">
+        <div class="etapa-header" onclick="Adm.toggleEtapa(${e.id})">
+          <div class="etapa-ordem etapa-ordem--${e.status}">${isAprovada?'✓':e.ordem}</div>
+          <div class="etapa-info">
+            <p class="etapa-nome">${TIPO_ICON[e.tipo]||''} ${e.nome}</p>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+              <span class="dept-badge dept-${e.departamento}">${e.deptLabel}</span>
+              <span class="pill pill--${e.status}" style="font-size:.68rem;">${STATUS_LABEL[e.status]||e.status}</span>
+              ${e.prazo_dias ? `<span style="font-size:.7rem;color:var(--ink-3);">⏱ ${e.prazo_dias}d</span>` : ''}
+            </div>
+          </div>
+          <span class="etapa-chevron ${isAtiva?'etapa-chevron--open':''}">▼</span>
+        </div>
+        <div class="etapa-body" id="body-${e.id}" style="${isAtiva?'':'display:none'}">
+          ${notaHtml}${respHtml}${docsHtml}${uploadHtml}${actionsHtml}
+        </div>
+      </div>`;
+  },
+
+  toggleEtapa(id) {
+    const body    = document.getElementById(`body-${id}`);
+    const chevron = body.previousElementSibling.querySelector('.etapa-chevron');
+    const visible = body.style.display !== 'none';
+    body.style.display    = visible ? 'none' : 'block';
+    chevron.classList.toggle('etapa-chevron--open', !visible);
+  },
+
+  async atualizarEtapa(processoId, etapaId, status) {
+    const nota = document.getElementById(`nota-${etapaId}`)?.value || '';
+    const labels = { APROVADO:'Aprovar esta etapa?', REPROVADO:'⚠️ Reprovar cancela o processo. Confirmar?', REENVIAR:'Solicitar reenvio de documentação?' };
+    if (!confirm(labels[status])) return;
+    try {
+      await req(`/api/processos/${processoId}/etapas/${etapaId}`, {
+        method:'PATCH', body:JSON.stringify({
+          status,
+          nota,
+          notaExterna: document.getElementById(`nota-externa-${etapaId}`)?.value || ''
+        })
+      });
+      // Invalida cache do processo e da lista para forçar dados frescos
+      invalidateCache(processoId);
+      await Adm.loadProcesso(processoId);
+      await Adm.loadStats();
+      await Adm.loadLista();
+    } catch(e) { alert('Erro: ' + e.message); }
+  },
+
+  async uploadDoc(processoId, etapaId, input) {
+    if (!input.files[0]) return;
+    const file     = input.files[0];
+    const label    = document.getElementById(`zone-label-${etapaId}`);
+    const zone     = document.getElementById(`zone-${etapaId}`);
+
+    // Feedback imediato ao selecionar o arquivo
+    const originalLabel = label ? label.innerHTML : '';
+    if (label) label.innerHTML = `⏳ Enviando <strong>${file.name}</strong>...`;
+    if (zone)  zone.style.borderColor = '#FF6A00';
+
+    const fd = new FormData();
+    fd.append('arquivo', file);
+    try {
+      await reqForm(`/api/processos/${processoId}/etapas/${etapaId}/documentos`, fd);
+      if (label) label.innerHTML = `✅ <strong>${file.name}</strong> anexado!`;
+      if (zone)  zone.style.borderColor = '#2ECC71';
+      // Recarrega a tela após 800ms para mostrar o arquivo
+      setTimeout(() => Adm.loadProcesso(processoId), 800);
+    } catch(e) {
+      if (label) label.innerHTML = originalLabel;
+      if (zone)  zone.style.borderColor = '';
+      alert('Erro no upload: ' + e.message);
+    }
+    input.value = '';
+  },
+
+  async revisarDoc(processoId, etapaId, docId, status) {
+    const obs = status === 'REENVIAR' ? prompt('Motivo para reenvio (opcional):') || '' : '';
+    try {
+      await req(`/api/processos/${processoId}/etapas/${etapaId}/documentos/${docId}`, {
+        method:'PATCH', body:JSON.stringify({ status, observacao: obs })
+      });
+      await Adm.loadProcesso(processoId);
+    } catch(e) { alert('Erro: ' + e.message); }
+  },
+
+  closeModal() { document.getElementById('action-modal').style.display = 'none'; },
+
+  _bancoData: [],
+
+  async toggleBancoTalentos() {
+    const overlay = document.getElementById('banco-talentos-overlay');
+    if (!overlay) return;
+    const visible = overlay.style.display !== 'none';
+    if (visible) { overlay.style.display = 'none'; return; }
+    overlay.style.display = 'flex';
+    await this._loadBancoTalentos();
+  },
+
+  async _loadBancoTalentos() {
+    const lista = document.getElementById('banco-lista');
+    lista.innerHTML = '<p style="color:#9AA3B2;text-align:center;padding:32px;">Carregando...</p>';
+    try {
+      const r = await fetch('/api/processos/banco-talentos', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      this._bancoData = await r.json();
+      this._renderBanco(this._bancoData);
+    } catch(e) {
+      lista.innerHTML = `<p style="color:#FF5252;text-align:center;">${e.message}</p>`;
+    }
+  },
+
+  filtrarBanco(q) {
+    if (!q) { this._renderBanco(this._bancoData); return; }
+    const ql = q.toLowerCase();
+    this._renderBanco(this._bancoData.filter(c =>
+      c.nome.toLowerCase().includes(ql) ||
+      c.vaga.toLowerCase().includes(ql) ||
+      (c.nrs || '').toLowerCase().includes(ql) ||
+      (c.email || '').toLowerCase().includes(ql)
+    ));
+  },
+
+  _renderBanco(items) {
+    const lista = document.getElementById('banco-lista');
+    if (!items.length) {
+      lista.innerHTML = '<p style="color:#5A6478;text-align:center;padding:40px;">Nenhum candidato no banco de talentos ainda.</p>';
+      return;
+    }
+    lista.innerHTML = items.map(c => `
+      <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);
+                  border-radius:12px;padding:16px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+          <div>
+            <p style="margin:0 0 2px;font-size:16px;font-weight:800;color:#fff;">${c.nome}</p>
+            <p style="margin:0;font-size:12px;color:#9AA3B2;">📍 ${c.vaga} · ${c.local} · Cancelado em ${c.dataCancelamento}</p>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${c.curriculo ? `<a href="${c.downloadCurriculoUrl}" target="_blank"
+                style="background:rgba(255,106,0,.1);border:1px solid rgba(255,106,0,.25);color:#FF6A00;
+                       border-radius:6px;padding:5px 12px;font-size:12px;font-weight:600;text-decoration:none;">
+              📄 Currículo
+            </a>` : ''}
+            <a href="mailto:${c.email}"
+               style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:#9AA3B2;
+                      border-radius:6px;padding:5px 12px;font-size:12px;text-decoration:none;">
+              ✉️ ${c.email}
+            </a>
+            ${c.telefone ? `<a href="https://wa.me/55${c.telefone.replace(/\D/g,'')}" target="_blank"
+               style="background:rgba(37,211,102,.08);border:1px solid rgba(37,211,102,.2);color:#25D366;
+                      border-radius:6px;padding:5px 12px;font-size:12px;text-decoration:none;">
+              📱 WhatsApp
+            </a>` : ''}
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;">
+          ${c.formacao ? `<span style="background:rgba(255,255,255,.05);border-radius:4px;padding:2px 8px;font-size:11px;color:#A8A8B8;">🎓 ${c.formacao}</span>` : ''}
+          ${c.experiencia ? `<span style="background:rgba(255,255,255,.05);border-radius:4px;padding:2px 8px;font-size:11px;color:#A8A8B8;">⏱ ${c.experiencia}</span>` : ''}
+          ${c.nrs ? `<span style="background:rgba(255,106,0,.06);border-radius:4px;padding:2px 8px;font-size:11px;color:#FF8C2A;">📜 ${c.nrs}</span>` : ''}
+          ${c.cnh ? `<span style="background:rgba(255,255,255,.05);border-radius:4px;padding:2px 8px;font-size:11px;color:#A8A8B8;">🪪 CNH: ${c.cnh}</span>` : ''}
+        </div>
+        ${c.motivoCancelamento ? `<p style="margin:8px 0 0;font-size:11px;color:#FF5252;">❌ ${c.motivoCancelamento}</p>` : ''}
+        ${c.notas ? `<p style="margin:6px 0 0;font-size:11px;color:#5B8DEF;font-style:italic;">🔒 ${c.notas}</p>` : ''}
+      </div>`).join('');
+  },
+
+  toggleDocAcoes(docId) {
+    const el = document.getElementById(`doc-acoes-${docId}`);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  },
+
+  async salvarComentario(docId, etapaId) {
+    const txt   = document.getElementById(`comentario-${docId}`)?.value || '';
+    const saved = document.getElementById(`acao-saved-${docId}`);
+    try {
+      await req(`/api/processos/${Adm.processoAtual}/etapas/${etapaId}/documentos/${docId}/comentar`, {
+        method: 'PATCH',
+        body: JSON.stringify({ comentario: txt }),
+      });
+      if (saved) { saved.style.display = 'inline'; setTimeout(() => saved.style.display = 'none', 2000); }
+    } catch(e) { alert('Erro: ' + e.message); }
+  },
+
+  async substituirDoc(docId, etapaId, input) {
+    const file = input.files[0];
+    if (!file) return;
+    const motivo = prompt('Motivo da substituição (ex: documento fora de conformidade):') || 'Substituição interna';
+    if (!confirm(`Substituir "${file.name}"?\nMotivo: ${motivo}\n\nO candidato NÃO será notificado.`)) {
+      input.value = ''; return;
+    }
+    const fd = new FormData();
+    fd.append('arquivo', file);
+    fd.append('motivo', motivo);
+    try {
+      const r = await fetch(`/api/processos/${Adm.processoAtual}/etapas/${etapaId}/documentos/${docId}/substituir`, {
+        method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: fd,
+      });
+      if (!r.ok) throw new Error((await r.json()).message);
+      alert('✅ Documento substituído! O arquivo antigo foi removido do SharePoint.');
+      await Adm.loadProcesso(Adm.processoAtual);
+    } catch(e) { alert('Erro ao substituir: ' + e.message); }
+    input.value = '';
+  },
+
+  EMAILS_VER_SALARIO: [
+    "gestor1@suaempresa.com.br",
+    "gestor2@suaempresa.com.br",
+    "mariane.froz@suaempresa.com.br",
+    "gestor3@suaempresa.com.br",
+    "ti@suaempresa.com.br",
+  ],
+
+  podVerSalario() {
+    // ROLE_ADMIN e ROLE_OWNER sempre veem o salário
+    if (['ROLE_ADMIN','ROLE_OWNER'].includes(ROLE)) return true;
+    // Lista específica de emails que podem ver
+    const email = (localStorage.getItem('rz_email') || '').toLowerCase();
+    return this.EMAILS_VER_SALARIO.includes(email);
+  },
+
+  async salvarInterno(processoId) {
+    const notas   = document.getElementById(`notas-internas-${processoId}`)?.value || '';
+    const salario = document.getElementById(`salario-proposto-${processoId}`)?.value || '';
+    const salObs  = document.getElementById(`salario-obs-${processoId}`)?.value || '';
+    const btn     = document.getElementById(`btn-interno-${processoId}`);
+    const saved   = document.getElementById(`interno-saved-${processoId}`);
+    if (btn) { btn.textContent = '💾 Salvando...'; btn.disabled = true; }
+    try {
+      await req(`/api/processos/${processoId}/interno`, {
+        method: 'PATCH',
+        body: JSON.stringify({ notasInternas: notas, salarioProposto: salario || null, salarioObs: salObs }),
+      });
+      if (saved) { saved.style.display = 'inline'; setTimeout(() => { saved.style.display='none'; }, 3000); }
+    } catch(e) { alert('Erro ao salvar: ' + e.message); }
+    finally { if (btn) { btn.textContent = '💾 Salvar Notas e Salário'; btn.disabled = false; } }
+  },
+};
+
+// ── Init: usa token do portal, sem tela de login ──────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  TOKEN = document.cookie.match('(^|;)\s*rz_token\s*=\s*([^;]+)')?.pop()
+       || localStorage.getItem('rz_token')
+       || sessionStorage.getItem('rz_token')
+       || sessionStorage.getItem('token')
+       || '';
+  await Promise.all([Adm.loadStats(), Adm.loadLista()]);
+
+  // Se veio com ?id= na URL (ex: clique em Admissões), abre o processo direto
+  const urlParams = new URLSearchParams(window.location.search);
+  const idParam = urlParams.get('id');
+  if (idParam) {
+    await Adm.loadProcesso(Number(idParam));
+    // Limpa o parâmetro da URL sem recarregar a página
+    window.history.replaceState({}, '', '/admissao');
+  }
+});
+</script>
+</body>
+</html>
