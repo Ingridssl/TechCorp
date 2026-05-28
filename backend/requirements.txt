@@ -1,0 +1,15 @@
+flask==3.1.0
+flask-cors==5.0.0
+sqlalchemy==2.0.36
+pg8000==1.31.2
+pyjwt==2.10.1
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.0
+flask-limiter==3.9.0
+msal==1.31.0
+requests==2.32.3
+gunicorn
+apscheduler==3.10.4
+openpyxl==3.1.2
+flask-compress==1.15
+gevent==24.11.1
